@@ -11,7 +11,7 @@
     <!-- Lucide Icons -->
     <script src="https://unpkg.com/lucide@latest"></script>
 
-    <!-- Tailwind Config for Custom Colors/Animations -->
+    <!-- Tailwind Config -->
     <script>
         tailwind.config = {
             darkMode: 'class',
@@ -39,13 +39,8 @@
 
     <style>
         /* Custom Scrollbar hiding */
-        .scrollbar-hide::-webkit-scrollbar {
-            display: none;
-        }
-        .scrollbar-hide {
-            -ms-overflow-style: none;
-            scrollbar-width: none;
-        }
+        .scrollbar-hide::-webkit-scrollbar { display: none; }
+        .scrollbar-hide { -ms-overflow-style: none; scrollbar-width: none; }
         
         /* Loading Spinner Animation */
         .loader {
@@ -54,43 +49,154 @@
             border-top: 3px solid #f97316;
             width: 24px;
             height: 24px;
-            -webkit-animation: spin 1s linear infinite; /* Safari */
             animation: spin 1s linear infinite;
         }
-        @keyframes spin {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
-        }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
     </style>
+
+    <!-- Firebase Compat (Safe for file:// usage) -->
+    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-auth.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-firestore.js"></script>
 </head>
 <body class="bg-[#FDFCF8] dark:bg-stone-950 text-stone-900 dark:text-stone-100 transition-colors duration-300 font-sans selection:bg-orange-100 dark:selection:bg-orange-900 overflow-x-hidden">
 
     <!-- Main App Container -->
-    <div id="root" class="max-w-md mx-auto min-h-screen relative shadow-2xl bg-[#FDFCF8] dark:bg-stone-950 min-w-[320px]">
-        <!-- Content will be injected here by JS -->
-    </div>
+    <div id="root" class="max-w-md mx-auto min-h-screen relative shadow-2xl bg-[#FDFCF8] dark:bg-stone-950 min-w-[320px]"></div>
 
-    <!-- Firebase and Application Logic -->
-    <script type="module">
-        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, collection, addDoc, query, orderBy, onSnapshot, deleteDoc, doc, updateDoc, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
-
-        // --- Configuration & State ---
-        const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
-        const appId = typeof __app_id !== 'undefined' ? __app_id : 'qz-ai-app';
+    <!-- Application Logic -->
+    <script>
+        // --- DATA SERVICE ABSTRACTION ---
+        // This handles switching between Firebase and Local Storage automatically
         
-        // Initialize Firebase
-        const app = initializeApp(firebaseConfig);
-        const auth = getAuth(app);
-        const db = getFirestore(app);
+        const DataService = {
+            mode: 'local', // defaults to local
+            listeners: [],
+            
+            init: function() {
+                // Try to detect Firebase environment variable
+                if (typeof __firebase_config !== 'undefined' && __firebase_config) {
+                    try {
+                        const config = JSON.parse(__firebase_config);
+                        firebase.initializeApp(config);
+                        this.mode = 'firebase';
+                        this.db = firebase.firestore();
+                        this.auth = firebase.auth();
+                        console.log("Connected to Firebase");
+                    } catch (e) {
+                        console.warn("Firebase config invalid, using Local Storage", e);
+                    }
+                } else {
+                    console.log("No Firebase config, using Local Storage mode");
+                }
+            },
 
-        // Global State
+            // Auth Methods
+            signIn: async function() {
+                if (this.mode === 'firebase') {
+                    if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                        return this.auth.signInWithCustomToken(__initial_auth_token);
+                    }
+                    return this.auth.signInAnonymously();
+                } else {
+                    // Mock Login for Local Mode
+                    return Promise.resolve({ uid: 'local-user' });
+                }
+            },
+
+            onAuthStateChanged: function(cb) {
+                if (this.mode === 'firebase') {
+                    this.auth.onAuthStateChanged(cb);
+                } else {
+                    // Immediately trigger for local user
+                    setTimeout(() => cb({ uid: 'local-user' }), 100);
+                }
+            },
+
+            // Database Methods
+            addQuiz: async function(userId, quizData) {
+                if (this.mode === 'firebase') {
+                    const appId = typeof __app_id !== 'undefined' ? __app_id : 'qz-ai-app';
+                    return this.db.collection('artifacts').doc(appId).collection('users').doc(userId).collection('quizzes').add(quizData);
+                } else {
+                    const quizzes = this._getLocalQuizzes();
+                    const newQuiz = { ...quizData, id: 'local_' + Date.now() };
+                    quizzes.push(newQuiz);
+                    this._saveLocalQuizzes(quizzes);
+                    return Promise.resolve(newQuiz);
+                }
+            },
+
+            deleteQuiz: async function(userId, quizId) {
+                if (this.mode === 'firebase') {
+                    const appId = typeof __app_id !== 'undefined' ? __app_id : 'qz-ai-app';
+                    return this.db.collection('artifacts').doc(appId).collection('users').doc(userId).collection('quizzes').doc(quizId).delete();
+                } else {
+                    let quizzes = this._getLocalQuizzes();
+                    quizzes = quizzes.filter(q => q.id !== quizId);
+                    this._saveLocalQuizzes(quizzes);
+                    return Promise.resolve();
+                }
+            },
+
+            updateQuiz: async function(userId, quizId, data) {
+                if (this.mode === 'firebase') {
+                    const appId = typeof __app_id !== 'undefined' ? __app_id : 'qz-ai-app';
+                    return this.db.collection('artifacts').doc(appId).collection('users').doc(userId).collection('quizzes').doc(quizId).update(data);
+                } else {
+                    const quizzes = this._getLocalQuizzes();
+                    const idx = quizzes.findIndex(q => q.id === quizId);
+                    if (idx !== -1) {
+                        quizzes[idx] = { ...quizzes[idx], ...data };
+                        this._saveLocalQuizzes(quizzes);
+                    }
+                    return Promise.resolve();
+                }
+            },
+
+            subscribeQuizzes: function(userId, cb) {
+                if (this.mode === 'firebase') {
+                    const appId = typeof __app_id !== 'undefined' ? __app_id : 'qz-ai-app';
+                    return this.db.collection('artifacts').doc(appId).collection('users').doc(userId).collection('quizzes')
+                        .orderBy('createdAt', 'desc')
+                        .onSnapshot(snapshot => {
+                            const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                            cb(data);
+                        });
+                } else {
+                    // Initial load
+                    cb(this._getLocalQuizzes().sort((a,b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0)));
+                    
+                    // Register listener for local updates
+                    const listener = (data) => cb(data.sort((a,b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0)));
+                    this.listeners.push(listener);
+                    
+                    // Return unsubscribe function
+                    return () => {
+                        this.listeners = this.listeners.filter(l => l !== listener);
+                    };
+                }
+            },
+
+            // Local Helpers
+            _getLocalQuizzes: function() {
+                try {
+                    return JSON.parse(localStorage.getItem('qz_local_quizzes') || '[]');
+                } catch { return []; }
+            },
+            _saveLocalQuizzes: function(data) {
+                localStorage.setItem('qz_local_quizzes', JSON.stringify(data));
+                // Notify listeners
+                this.listeners.forEach(cb => cb(data));
+            }
+        };
+
+        // --- APP STATE ---
         const state = {
             user: null,
             loading: true,
-            view: 'welcome', // welcome, app, quiz
-            activeTab: 'home', // home, library, teacher, profile
+            view: 'welcome', 
+            activeTab: 'home',
             apiKey: localStorage.getItem('maku_api_key') || '',
             userName: localStorage.getItem('maku_user_name') || '',
             mascotImage: localStorage.getItem('maku_mascot_img') || null,
@@ -99,62 +205,31 @@
             quizzes: [],
             currentQuiz: null,
             genLoading: false,
-            
-            // Inputs
             homeInputType: 'topic',
             homeInputValue: '',
             homeTextContent: '',
-            homeSelectedFile: null, // {name, type, base64}
+            homeSelectedFile: null,
             quizConfig: { count: 10, explanations: true, difficulty: 'Medium' },
-            homeMode: 'quiz', // quiz, qa, lesson
-
-            // Teacher Chat
-            chatMessages: [
-                { role: 'assistant', text: "Hello! I'm Vayur. I'm here to help you learn anything. You can upload a file or just ask me a question!" }
-            ],
+            homeMode: 'quiz',
+            chatMessages: [{ role: 'assistant', text: "Hello! I'm Vayur. I'm here to help you learn anything. You can upload a file or just ask me a question!" }],
             chatThinking: false
         };
 
-        // --- Helper Functions ---
-
-        // DOM Helper
+        // --- DOM HELPER ---
         const $ = (selector) => document.querySelector(selector);
-        
-        // Theme Helper
-        const applyTheme = () => {
-            const html = document.documentElement;
-            if (state.darkMode) {
-                html.classList.add('dark');
-                localStorage.setItem('maku_theme', 'dark');
-            } else {
-                html.classList.remove('dark');
-                localStorage.setItem('maku_theme', 'light');
-            }
-        };
 
-        // Gemini API Call
+        // --- GEMINI API ---
         const callGemini = async (prompt, attachment = null, mode = 'json') => {
             const model = 'gemini-2.5-flash-preview-09-2025';
             const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${state.apiKey}`;
-
             const parts = [{ text: prompt }];
-            if (attachment) {
-                parts.push({
-                    inlineData: {
-                        mimeType: attachment.type, 
-                        data: attachment.base64
-                    }
-                });
-            }
-
-            const payload = {
-                contents: [{ parts }],
-                generationConfig: { temperature: 0.7 }
+            if (attachment) parts.push({ inlineData: { mimeType: attachment.type, data: attachment.base64 } });
+            
+            const payload = { 
+                contents: [{ parts }], 
+                generationConfig: { temperature: 0.7 } 
             };
-
-            if (mode === 'json') {
-                payload.generationConfig.responseMimeType = "application/json";
-            }
+            if (mode === 'json') payload.generationConfig.responseMimeType = "application/json";
 
             try {
                 const response = await fetch(url, {
@@ -172,688 +247,418 @@
             }
         };
 
-        // --- Render Functions ---
+        // --- RENDERING ---
+        const applyTheme = () => {
+            const html = document.documentElement;
+            if (state.darkMode) {
+                html.classList.add('dark');
+                localStorage.setItem('maku_theme', 'dark');
+            } else {
+                html.classList.remove('dark');
+                localStorage.setItem('maku_theme', 'light');
+            }
+        };
 
-        const renderMascot = (size = 'md', imageSrc = null, stateType = 'idle') => {
+        const renderMascot = (size, img, type) => {
             const sizes = { sm: 'w-10 h-10 text-xl', md: 'w-20 h-20 text-4xl', lg: 'w-32 h-32 text-6xl' };
             const emojis = { thinking: '🤔', happy: '🌱', sad: '🥀', talking: '😮', success: '🌸', idle: '🌱' };
+            const content = img ? `<img src="${img}" class="w-full h-full object-cover">` : `<span class="animate-bounce-slow">${emojis[type]||'🌱'}</span>`;
             
-            const imgContent = imageSrc 
-                ? `<img src="${imageSrc}" class="w-full h-full object-cover" alt="Mascot" />`
-                : `<span class="animate-bounce-slow transform">${emojis[stateType] || '🌱'}</span>`;
-
-            return `
-                <div class="${sizes[size]} rounded-full bg-stone-100 dark:bg-stone-800 flex items-center justify-center shadow-inner border border-stone-200 dark:border-stone-700 relative overflow-hidden transition-transform hover:scale-105 cursor-pointer select-none">
-                    ${imgContent}
-                    ${stateType === 'thinking' && imageSrc ? '<div class="absolute inset-0 bg-white/50 dark:bg-black/50 flex items-center justify-center"><div class="loader"></div></div>' : ''}
-                </div>
-            `;
-        };
-
-        // Main Router
-        const render = () => {
-            const root = $('#root');
-            applyTheme();
-            lucide.createIcons(); // Refresh icons if any
-
-            if (state.loading) {
-                root.innerHTML = '<div class="h-screen w-full flex items-center justify-center bg-[#FDFCF8] dark:bg-stone-950"><div class="loader text-orange-400"></div></div>';
-                return;
-            }
-
-            if (state.view === 'welcome') {
-                renderWelcome(root);
-            } else if (state.view === 'quiz') {
-                renderQuizPlayer(root);
-            } else {
-                renderAppLayout(root);
-            }
-            lucide.createIcons();
-        };
-
-        // 1. Welcome View
-        const renderWelcome = (root) => {
-            root.innerHTML = `
-                <div class="min-h-screen w-full flex flex-col items-center justify-center p-6 animate-fade-in">
-                    <div class="w-full max-w-md space-y-10">
-                        <div class="text-center space-y-4">
-                            <div class="flex justify-center mb-6 relative group">
-                                <label class="cursor-pointer relative">
-                                    ${renderMascot('lg', state.mascotImage, 'happy')}
-                                    <div class="absolute bottom-0 right-0 bg-white dark:bg-stone-800 rounded-full p-2 shadow-md border border-stone-200 dark:border-stone-700 text-stone-500 hover:text-orange-500 transition-colors">
-                                        <i data-lucide="camera" class="w-4 h-4"></i>
-                                    </div>
-                                    <input type="file" accept="image/*" class="hidden" id="welcome-mascot-upload">
-                                </label>
-                            </div>
-                            <h1 class="text-4xl font-bold text-stone-800 dark:text-stone-100 tracking-tight">QZ.ai</h1>
-                            <p class="text-stone-500 dark:text-stone-400 text-lg">Your cozy AI study companion.</p>
-                        </div>
-
-                        <div class="bg-white dark:bg-stone-900 p-8 rounded-[32px] shadow-xl shadow-stone-200/50 dark:shadow-none border border-stone-100 dark:border-stone-800">
-                            <form id="login-form" class="space-y-6">
-                                <div class="space-y-2">
-                                    <label class="text-sm font-semibold text-stone-600 dark:text-stone-400 ml-1">What should QZ.ai call you?</label>
-                                    <input type="text" id="login-name" value="${state.userName}" placeholder="Your Name" class="w-full px-5 py-4 rounded-2xl bg-stone-50 dark:bg-stone-950 border-transparent focus:bg-white focus:ring-2 focus:ring-orange-400 transition-all outline-none dark:text-white" required />
-                                </div>
-                                <div class="space-y-2">
-                                    <label class="text-sm font-semibold text-stone-600 dark:text-stone-400 ml-1">Gemini API Key</label>
-                                    <input type="password" id="login-key" value="${state.apiKey}" placeholder="Paste your key here" class="w-full px-5 py-4 rounded-2xl bg-stone-50 dark:bg-stone-950 border-transparent focus:bg-white focus:ring-2 focus:ring-orange-400 transition-all outline-none dark:text-white" required />
-                                    <p class="text-xs text-stone-400 ml-1">Don't have one? <a href="https://aistudio.google.com/api-keys" target="_blank" class="text-orange-500 hover:underline">Get your API key here</a></p>
-                                </div>
-                                <button type="submit" class="w-full bg-orange-400 hover:bg-orange-500 text-white font-bold py-4 rounded-2xl shadow-lg shadow-orange-100 dark:shadow-none transform active:scale-95 transition-all mt-4">Start Learning</button>
-                            </form>
-                        </div>
-                    </div>
-                </div>
-            `;
-
-            // Listeners
-            $('#welcome-mascot-upload').addEventListener('change', (e) => handleImageUpload(e, 'mascot'));
-            $('#login-form').addEventListener('submit', (e) => {
-                e.preventDefault();
-                const name = $('#login-name').value;
-                const key = $('#login-key').value;
-                if(name && key) {
-                    state.userName = name;
-                    state.apiKey = key;
-                    localStorage.setItem('maku_user_name', name);
-                    localStorage.setItem('maku_api_key', key);
-                    state.view = 'app';
-                    render();
-                }
-            });
-        };
-
-        // 2. Main App Wrapper (Tabs)
-        const renderAppLayout = (root) => {
-            root.innerHTML = `
-                <main class="px-6 pt-8 pb-28 min-h-screen">
-                    ${state.activeTab === 'home' ? getHomeHtml() : ''}
-                    ${state.activeTab === 'library' ? getLibraryHtml() : ''}
-                    ${state.activeTab === 'teacher' ? getTeacherHtml() : ''}
-                    ${state.activeTab === 'profile' ? getProfileHtml() : ''}
-                </main>
-                ${getNavBarHtml()}
-                ${state.genLoading ? getLoadingOverlay() : ''}
-                ${state.activeTab === 'home' && state.showConfig ? getConfigModalHtml() : ''}
-            `;
-
-            attachAppListeners();
-        };
-
-        // --- HTML Generators for Tabs ---
-
-        const getHomeHtml = () => {
-            const displayName = state.userName.length > 10 ? `${state.userName.substring(0, 10)}...` : state.userName;
-            
-            return `
-            <div class="space-y-8 pb-20 relative animate-slide-up">
-                <div class="space-y-1">
-                    <h1 class="text-3xl font-bold text-stone-900 dark:text-white flex items-center gap-3">
-                        ${displayName} ${renderMascot('sm', state.mascotImage, 'happy')}
-                    </h1>
-                    <p class="text-stone-500 dark:text-stone-400">What do you want to learn today?</p>
-                </div>
-
-                <!-- Mode Selectors -->
-                <div class="grid grid-cols-3 gap-2">
-                    ${renderModeCard('quiz', 'Quiz', 'MCQs', 'circle-check', 'orange')}
-                    ${renderModeCard('qa', 'Q&A', 'Type Ans', 'message-circle', 'purple')}
-                    ${renderModeCard('lesson', 'Lesson', 'Read', 'book-open', 'blue')}
-                </div>
-
-                <div class="bg-white dark:bg-stone-900 p-6 rounded-[32px] shadow-sm border border-stone-100 dark:border-stone-800 space-y-6">
-                    <!-- Topic Input -->
-                    <div class="space-y-3">
-                        <label class="text-xs font-bold uppercase tracking-wider text-stone-400 ml-1">Topic or Subject</label>
-                        <input type="text" id="topic-input" value="${state.homeInputValue}" placeholder="e.g., Photosynthesis, World War II" class="w-full px-4 py-4 rounded-2xl bg-stone-50 dark:bg-stone-950 border border-transparent focus:bg-white focus:border-orange-200 outline-none text-stone-800 dark:text-white transition-all" />
-                    </div>
-
-                    <!-- Divider -->
-                    <div class="flex items-center gap-4"><div class="h-px bg-stone-100 dark:bg-stone-800 flex-1"></div><span class="text-xs text-stone-400">or upload</span><div class="h-px bg-stone-100 dark:bg-stone-800 flex-1"></div></div>
-
-                    <!-- Upload Area -->
-                    <div id="upload-area" class="border-2 border-dashed rounded-3xl p-8 flex flex-col items-center justify-center text-center cursor-pointer transition-all ${state.homeSelectedFile ? 'border-orange-400 bg-orange-50 dark:bg-orange-900/10' : 'border-stone-200 dark:border-stone-700 hover:bg-stone-50 dark:hover:bg-stone-800'}">
-                        ${state.homeSelectedFile ? `
-                            <div class="relative w-full flex flex-col items-center">
-                                <div class="h-24 w-24 bg-stone-100 dark:bg-stone-800 rounded-2xl flex items-center justify-center mb-2 shadow-inner"><i data-lucide="file-text" class="w-10 h-10 text-stone-400"></i></div>
-                                <p class="text-sm font-bold text-stone-700 dark:text-stone-300 truncate max-w-[200px]">${state.homeSelectedFile.name}</p>
-                                <button id="clear-file" class="absolute -top-4 -right-4 bg-white rounded-full p-2 shadow-md text-red-500 hover:bg-red-50"><i data-lucide="x" class="w-4 h-4"></i></button>
-                            </div>
-                        ` : `
-                            <i data-lucide="upload-cloud" class="text-stone-300 mb-3 w-10 h-10"></i>
-                            <p class="text-stone-500 text-sm font-medium">Drop PDF, text, or image</p>
-                        `}
-                        <input type="file" id="file-input" class="hidden" accept="image/*, .pdf, .txt, .md">
-                    </div>
-
-                    <!-- Divider -->
-                    <div class="flex items-center gap-4"><div class="h-px bg-stone-100 dark:bg-stone-800 flex-1"></div><span class="text-xs text-stone-400">or paste</span><div class="h-px bg-stone-100 dark:bg-stone-800 flex-1"></div></div>
-
-                    <!-- Text Area -->
-                    <textarea id="text-input" placeholder="Paste notes..." class="w-full px-4 py-4 rounded-2xl bg-stone-50 dark:bg-stone-950 border border-transparent focus:bg-white focus:border-orange-200 outline-none text-stone-800 dark:text-white transition-all min-h-[120px] resize-none text-sm">${state.homeTextContent}</textarea>
-
-                    <button id="config-btn" class="w-full py-4 rounded-2xl font-bold text-lg transition-all ${(!state.homeInputValue && !state.homeSelectedFile && !state.homeTextContent) ? 'bg-stone-200 dark:bg-stone-800 text-stone-400 cursor-not-allowed' : 'bg-orange-400 hover:bg-orange-500 text-white shadow-lg'}" ${(!state.homeInputValue && !state.homeSelectedFile && !state.homeTextContent) ? 'disabled' : ''}>
-                        Configure ${state.homeMode === 'quiz' ? 'Quiz' : state.homeMode === 'qa' ? 'Q&A' : 'Lesson'}
-                    </button>
-                </div>
+            return `<div class="${sizes[size]} rounded-full bg-stone-100 dark:bg-stone-800 flex items-center justify-center shadow-inner border border-stone-200 dark:border-stone-700 relative overflow-hidden transition-transform hover:scale-105 select-none">
+                ${content}
+                ${type==='thinking' && img ? '<div class="absolute inset-0 bg-white/50 dark:bg-black/50 flex items-center justify-center"><div class="loader"></div></div>' : ''}
             </div>`;
         };
 
-        const renderModeCard = (mode, label, sub, icon, color) => {
-            const isActive = state.homeMode === mode;
-            const borderClass = isActive ? `border-${color}-400 bg-${color}-50 dark:bg-${color}-900/10` : 'border-stone-100 dark:border-stone-800 bg-white dark:bg-stone-900';
-            const iconBg = isActive ? `bg-${color}-100 dark:bg-${color}-900/50 text-${color}-600` : `bg-${color}-100 dark:bg-${color}-900/50 text-${color}-600`;
+        const render = () => {
+            const root = $('#root');
+            applyTheme();
             
+            if (state.loading) {
+                root.innerHTML = '<div class="h-screen w-full flex items-center justify-center"><div class="loader text-orange-400"></div></div>';
+                return;
+            }
+
+            if (state.view === 'welcome') renderWelcome(root);
+            else if (state.view === 'quiz') renderQuizPlayer(root);
+            else renderAppLayout(root);
+            
+            if(window.lucide) lucide.createIcons();
+        };
+
+        const renderWelcome = (root) => {
+            root.innerHTML = `
+                <div class="min-h-screen flex flex-col items-center justify-center p-6 animate-fade-in">
+                    <div class="w-full max-w-md space-y-10 text-center">
+                        <div>
+                            <div class="flex justify-center mb-6 relative group">
+                                <label class="cursor-pointer relative">
+                                    ${renderMascot('lg', state.mascotImage, 'happy')}
+                                    <div class="absolute bottom-0 right-0 bg-white dark:bg-stone-800 rounded-full p-2 shadow-md border text-stone-500 hover:text-orange-500 transition-colors"><i data-lucide="camera" class="w-4 h-4"></i></div>
+                                    <input type="file" accept="image/*" class="hidden" onchange="handleImage(event, 'mascot')">
+                                </label>
+                            </div>
+                            <h1 class="text-4xl font-bold text-stone-800 dark:text-stone-100">QZ.ai</h1>
+                            <p class="text-stone-500 dark:text-stone-400 text-lg">Your cozy AI study companion.</p>
+                        </div>
+                        <div class="bg-white dark:bg-stone-900 p-8 rounded-[32px] shadow-xl border border-stone-100 dark:border-stone-800">
+                            <form onsubmit="handleLogin(event)" class="space-y-6 text-left">
+                                <div class="space-y-2">
+                                    <label class="text-sm font-semibold text-stone-600 dark:text-stone-400 ml-1">Name</label>
+                                    <input type="text" id="login-name" value="${state.userName}" placeholder="Your Name" class="w-full px-5 py-4 rounded-2xl bg-stone-50 dark:bg-stone-950 outline-none focus:ring-2 focus:ring-orange-400 dark:text-white" required>
+                                </div>
+                                <div class="space-y-2">
+                                    <label class="text-sm font-semibold text-stone-600 dark:text-stone-400 ml-1">Gemini API Key</label>
+                                    <input type="password" id="login-key" value="${state.apiKey}" placeholder="Paste API Key" class="w-full px-5 py-4 rounded-2xl bg-stone-50 dark:bg-stone-950 outline-none focus:ring-2 focus:ring-orange-400 dark:text-white" required>
+                                    <p class="text-xs text-stone-400 ml-1">Get one at <a href="https://aistudio.google.com/api-keys" target="_blank" class="text-orange-500 hover:underline">aistudio.google.com</a></p>
+                                </div>
+                                <button type="submit" class="w-full bg-orange-400 hover:bg-orange-500 text-white font-bold py-4 rounded-2xl shadow-lg mt-4 transform active:scale-95 transition-all">Start Learning</button>
+                            </form>
+                        </div>
+                    </div>
+                </div>`;
+        };
+
+        const renderAppLayout = (root) => {
+            const tabs = [
+                {id:'home',icon:'home',label:'Create'},
+                {id:'library',icon:'library',label:'Library'},
+                {id:'teacher',icon:'graduation-cap',label:'Teacher'},
+                {id:'profile',icon:'user',label:'Profile'}
+            ];
+            
+            let content = '';
+            if(state.activeTab === 'home') content = renderHome();
+            else if(state.activeTab === 'library') content = renderLibrary();
+            else if(state.activeTab === 'teacher') content = renderTeacher();
+            else if(state.activeTab === 'profile') content = renderProfile();
+
+            root.innerHTML = `
+                <main class="px-6 pt-8 pb-32 min-h-screen">${content}</main>
+                <div class="fixed bottom-0 left-0 right-0 bg-white dark:bg-stone-900 border-t border-stone-100 dark:border-stone-800 px-6 py-4 flex justify-between items-center z-50 safe-area-bottom shadow-lg">
+                    ${tabs.map(t => `
+                        <button onclick="setTab('${t.id}')" class="flex flex-col items-center gap-1.5 w-16 transition-all ${state.activeTab === t.id ? 'text-orange-500 dark:text-orange-400 scale-105' : 'text-stone-400 dark:text-stone-600'}">
+                            <i data-lucide="${t.icon}" class="w-6 h-6" stroke-width="${state.activeTab===t.id?2.5:2}"></i>
+                            <span class="text-[10px] font-bold tracking-wide">${t.label}</span>
+                        </button>
+                    `).join('')}
+                </div>
+                ${state.genLoading ? renderLoadingOverlay() : ''}
+                ${state.activeTab === 'home' && state.showConfig ? renderConfigModal() : ''}
+            `;
+            
+            // Attach Listeners for inputs (since innerHTML wipes them)
+            attachListeners();
+        };
+
+        const renderHome = () => {
+            const name = state.userName.length > 10 ? state.userName.substring(0,10)+'...' : state.userName;
             return `
-                <button onclick="setMode('${mode}')" class="p-3 rounded-2xl border-2 text-left transition-all relative overflow-hidden flex flex-col items-center justify-center gap-2 h-28 ${borderClass}">
-                    <div class="w-8 h-8 rounded-full ${iconBg} flex items-center justify-center">
-                        <i data-lucide="${icon}" class="w-4 h-4"></i>
+                <div class="space-y-8 animate-slide-up">
+                    <div>
+                        <h1 class="text-3xl font-bold text-stone-900 dark:text-white flex items-center gap-3">
+                            ${name} ${renderMascot('sm', state.mascotImage, 'happy')}
+                        </h1>
+                        <p class="text-stone-500 dark:text-stone-400">What do you want to learn today?</p>
                     </div>
-                    <div class="text-center">
-                        <h3 class="font-bold text-stone-800 dark:text-stone-100 text-sm">${label}</h3>
-                        <p class="text-[10px] text-stone-500 mt-0.5 font-medium">${sub}</p>
+                    <div class="grid grid-cols-3 gap-2">
+                        ${renderModeBtn('quiz','Quiz','MCQs','circle-check','orange')}
+                        ${renderModeBtn('qa','Q&A','Type Ans','message-circle','purple')}
+                        ${renderModeBtn('lesson','Lesson','Read','book-open','blue')}
                     </div>
-                </button>
+                    <div class="bg-white dark:bg-stone-900 p-6 rounded-[32px] shadow-sm border border-stone-100 dark:border-stone-800 space-y-6">
+                        <div class="space-y-3">
+                            <label class="text-xs font-bold uppercase text-stone-400 ml-1">Topic</label>
+                            <input type="text" id="topic-inp" value="${state.homeInputValue}" placeholder="e.g. History of Rome" class="w-full px-4 py-4 rounded-2xl bg-stone-50 dark:bg-stone-950 outline-none border border-transparent focus:bg-white focus:border-orange-200 dark:text-white transition-all">
+                        </div>
+                        <div class="flex items-center gap-4 text-stone-200"><div class="h-px bg-current flex-1"></div><span class="text-xs text-stone-400">OR</span><div class="h-px bg-current flex-1"></div></div>
+                        
+                        <div id="upload-zone" class="border-2 border-dashed rounded-3xl p-8 flex flex-col items-center justify-center text-center cursor-pointer transition-all ${state.homeSelectedFile ? 'border-orange-400 bg-orange-50 dark:bg-orange-900/10' : 'border-stone-200 dark:border-stone-700 hover:bg-stone-50 dark:hover:bg-stone-800'}">
+                            ${state.homeSelectedFile ? `
+                                <div class="relative">
+                                    <i data-lucide="file-text" class="w-10 h-10 text-stone-400 mx-auto mb-2"></i>
+                                    <p class="text-sm font-bold text-stone-700 dark:text-stone-300 truncate max-w-[200px]">${state.homeSelectedFile.name}</p>
+                                    <button id="clear-file" class="absolute -top-4 -right-8 bg-white rounded-full p-1 shadow text-red-500"><i data-lucide="x" class="w-4 h-4"></i></button>
+                                </div>
+                            ` : `<i data-lucide="upload-cloud" class="text-stone-300 mb-3 w-10 h-10"></i><p class="text-stone-500 text-sm font-medium">Upload File</p>`}
+                            <input type="file" id="file-inp" class="hidden">
+                        </div>
+
+                        <div class="flex items-center gap-4 text-stone-200"><div class="h-px bg-current flex-1"></div><span class="text-xs text-stone-400">OR</span><div class="h-px bg-current flex-1"></div></div>
+                        <textarea id="text-inp" placeholder="Paste notes here..." class="w-full px-4 py-4 rounded-2xl bg-stone-50 dark:bg-stone-950 outline-none border border-transparent focus:bg-white focus:border-orange-200 dark:text-white min-h-[100px] resize-none text-sm">${state.homeTextContent}</textarea>
+
+                        <button id="config-btn" class="w-full py-4 rounded-2xl font-bold text-lg transition-all ${(!state.homeInputValue&&!state.homeSelectedFile&&!state.homeTextContent)?'bg-stone-200 dark:bg-stone-800 text-stone-400':'bg-orange-400 hover:bg-orange-500 text-white shadow-lg'}">Configure ${state.homeMode.toUpperCase()}</button>
+                    </div>
+                </div>
             `;
         };
 
-        const getLibraryHtml = () => {
-            if (state.quizzes.length === 0) {
-                return `
-                    <div class="flex-1 flex flex-col items-center justify-center text-center p-8 mt-20 opacity-60 animate-fade-in">
-                        <i data-lucide="book-open" class="w-24 h-24 mb-6 text-stone-300 dark:text-stone-700" stroke-width="1"></i>
-                        <p class="text-stone-400 dark:text-stone-500 font-medium">Empty library. Create something!</p>
-                    </div>`;
-            }
-            const list = state.quizzes.map(q => {
-                const icon = q.mode === 'lesson' ? 'book-open' : q.mode === 'qa' ? 'message-circle' : 'check-circle';
-                const color = q.mode === 'lesson' ? 'blue' : q.mode === 'qa' ? 'purple' : 'orange';
-                return `
-                    <div onclick="playQuiz('${q.id}')" class="bg-white dark:bg-stone-900 p-5 rounded-[24px] shadow-sm border border-stone-100 dark:border-stone-800 hover:border-orange-200 transition-all cursor-pointer group relative">
-                        <div class="flex justify-between items-start mb-3">
-                            <div class="w-10 h-10 rounded-full flex items-center justify-center bg-${color}-100 text-${color}-500">
-                                <i data-lucide="${icon}" class="w-5 h-5"></i>
-                            </div>
-                            ${(q.mode !== 'lesson' && q.score === q.totalQuestions && q.score > 0) ? `<span class="text-yellow-400 bg-yellow-50 dark:bg-yellow-900/20 px-2 py-1 rounded-full text-xs font-bold flex items-center gap-1"><i data-lucide="award" class="w-3 h-3"></i> Perfect</span>` : ''}
-                        </div>
-                        <h3 class="font-bold text-lg text-stone-800 dark:text-stone-100 mb-1 leading-tight">${q.title}</h3>
-                        <p class="text-xs text-stone-500 dark:text-stone-400 line-clamp-1 mb-4">${q.description}</p>
-                        <div class="flex items-center justify-between pt-3 border-t border-stone-50 dark:border-stone-800">
-                            <span class="text-xs font-bold text-stone-400 uppercase tracking-wider">${q.mode} • ${q.questions.length} Items</span>
-                            ${q.mode !== 'lesson' ? `<span class="text-xs font-bold text-stone-600 dark:text-stone-300">Score: ${q.score}</span>` : ''}
-                        </div>
-                        <button onclick="deleteQuiz(event, '${q.id}')" class="absolute top-4 right-4 p-2 text-stone-300 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity"><i data-lucide="trash-2" class="w-4 h-4"></i></button>
-                    </div>
-                `;
-            }).join('');
-
-            return `<div class="space-y-6 pt-2 h-full flex flex-col"><h1 class="text-3xl font-bold text-stone-900 dark:text-white flex items-center gap-2">Library <span class="text-2xl">📚</span></h1><div class="grid gap-4 pb-20">${list}</div></div>`;
+        const renderModeBtn = (m,l,s,i,c) => {
+            const active = state.homeMode === m;
+            const border = active ? `border-${c}-400 bg-${c}-50 dark:bg-${c}-900/10` : 'border-stone-100 dark:border-stone-800 bg-white dark:bg-stone-900';
+            const iconBg = active ? `bg-${c}-100 text-${c}-600` : `bg-${c}-100 dark:bg-${c}-900/50 text-${c}-600`;
+            return `<button onclick="setMode('${m}')" class="p-3 rounded-2xl border-2 text-left flex flex-col items-center justify-center gap-2 h-28 ${border}">
+                <div class="w-8 h-8 rounded-full ${iconBg} flex items-center justify-center"><i data-lucide="${i}" class="w-4 h-4"></i></div>
+                <div class="text-center"><h3 class="font-bold text-stone-800 dark:text-stone-100 text-sm">${l}</h3><p class="text-[10px] text-stone-500">${s}</p></div>
+            </button>`;
         };
 
-        const getTeacherHtml = () => {
-            const chatHtml = state.chatMessages.map(msg => `
-                <div class="flex w-full ${msg.role === 'user' ? 'justify-end' : 'justify-start gap-3'}">
-                    ${msg.role === 'assistant' ? `
-                        <div class="w-8 h-8 rounded-full bg-stone-100 flex items-center justify-center shrink-0 mt-2 overflow-hidden border border-stone-200">
-                            ${state.professorImage ? `<img src="${state.professorImage}" class="w-full h-full object-cover">` : '<span class="text-sm">👨‍🏫</span>'}
-                        </div>
-                    ` : ''}
-                    <div class="max-w-[80%] p-5 text-sm leading-relaxed shadow-sm ${msg.role === 'user' ? 'bg-orange-400 text-white rounded-3xl rounded-br-none' : 'bg-stone-100 dark:bg-stone-800 text-stone-800 dark:text-stone-200 rounded-3xl rounded-tl-none'}">
-                        ${msg.text}
-                    </div>
-                </div>
-            `).join('');
+        const renderLibrary = () => {
+            if(state.quizzes.length === 0) return `<div class="flex-1 flex flex-col items-center justify-center text-center p-8 mt-20 opacity-60"><i data-lucide="book-open" class="w-24 h-24 mb-6 text-stone-300"></i><p class="text-stone-400 font-medium">Empty Library.</p></div>`;
+            return `
+                <h1 class="text-3xl font-bold text-stone-900 dark:text-white flex items-center gap-2 mb-6">Library <span class="text-2xl">📚</span></h1>
+                <div class="grid gap-4">
+                    ${state.quizzes.map(q => {
+                        const colors = {lesson:'blue',qa:'purple',quiz:'orange'};
+                        const icons = {lesson:'book-open',qa:'message-circle',quiz:'circle-check'};
+                        const c = colors[q.mode];
+                        return `<div onclick="playQuiz('${q.id}')" class="bg-white dark:bg-stone-900 p-5 rounded-[24px] shadow-sm border border-stone-100 dark:border-stone-800 relative group cursor-pointer">
+                            <div class="flex justify-between items-start mb-3">
+                                <div class="w-10 h-10 rounded-full flex items-center justify-center bg-${c}-100 text-${c}-500"><i data-lucide="${icons[q.mode]}" class="w-5 h-5"></i></div>
+                                ${(q.mode!=='lesson' && q.score===q.totalQuestions && q.score>0) ? `<span class="bg-yellow-100 text-yellow-600 px-2 py-1 rounded-full text-xs font-bold flex items-center gap-1"><i data-lucide="award" class="w-3 h-3"></i> 100%</span>` : ''}
+                            </div>
+                            <h3 class="font-bold text-lg text-stone-800 dark:text-stone-100 leading-tight">${q.title}</h3>
+                            <p class="text-xs text-stone-500 line-clamp-1 mb-4">${q.description}</p>
+                            <div class="flex items-center justify-between pt-3 border-t border-stone-50 dark:border-stone-800">
+                                <span class="text-xs font-bold text-stone-400 uppercase">${q.mode} • ${q.questions.length} Items</span>
+                                ${q.mode!=='lesson'?`<span class="text-xs font-bold text-stone-500">Score: ${q.score}</span>`:''}
+                            </div>
+                            <button onclick="deleteQuiz(event, '${q.id}')" class="absolute top-4 right-4 p-2 text-stone-300 hover:text-red-400"><i data-lucide="trash-2" class="w-4 h-4"></i></button>
+                        </div>`
+                    }).join('')}
+                </div>`;
+        };
 
-            const thinkingHtml = state.chatThinking ? `
-                <div class="flex justify-start gap-3">
-                    <div class="w-8 h-8 rounded-full bg-stone-100 flex items-center justify-center shrink-0 mt-2 overflow-hidden border border-stone-200">
-                        ${state.professorImage ? `<img src="${state.professorImage}" class="w-full h-full object-cover">` : '<span class="text-sm">👨‍🏫</span>'}
-                    </div>
-                    <div class="bg-stone-100 dark:bg-stone-800 p-5 rounded-3xl rounded-tl-none flex gap-1.5">
-                        <div class="w-2 h-2 bg-stone-400 rounded-full animate-bounce"></div>
-                        <div class="w-2 h-2 bg-stone-400 rounded-full animate-bounce" style="animation-delay: 75ms"></div>
-                        <div class="w-2 h-2 bg-stone-400 rounded-full animate-bounce" style="animation-delay: 150ms"></div>
-                    </div>
-                </div>` : '';
-
+        const renderTeacher = () => {
             return `
                 <div class="h-[calc(100vh-140px)] flex flex-col relative">
                     <div class="flex justify-between items-center mb-4">
                         <h1 class="text-2xl font-bold text-stone-800 dark:text-white">Professor Vayur</h1>
-                        <div class="relative group cursor-pointer">
-                            <label class="cursor-pointer">
-                                <div class="w-10 h-10 border border-stone-200 rounded-lg p-1 overflow-hidden bg-white dark:bg-stone-800">
-                                    ${state.professorImage ? `<img src="${state.professorImage}" class="w-full h-full object-cover rounded-md" />` : renderMascot('sm', null, 'happy')}
-                                </div>
-                                <div class="absolute -bottom-1 -right-1 bg-white dark:bg-stone-800 rounded-full p-1 shadow-md border border-stone-200 dark:border-stone-700 text-stone-500 hover:text-orange-500 transition-colors">
-                                    <i data-lucide="camera" class="w-3 h-3"></i>
-                                </div>
-                                <input type="file" accept="image/*" class="hidden" id="prof-upload" onchange="handleImageUpload(event, 'professor')">
-                            </label>
-                        </div>
-                    </div>
-                    <div id="chat-container" class="flex-1 overflow-y-auto space-y-6 pb-32 scrollbar-hide">
-                        ${chatHtml}
-                        ${thinkingHtml}
-                    </div>
-                    <!-- Fixed Text Box -->
-                    <div class="fixed bottom-[85px] left-0 right-0 z-40 px-6 max-w-md mx-auto w-full">
-                        <div class="bg-white dark:bg-stone-900 p-2 rounded-[28px] shadow-xl border border-stone-200 dark:border-stone-700 flex items-center gap-2">
-                            <button class="p-3 text-stone-400 hover:text-stone-600 transition-colors"><i data-lucide="upload-cloud" class="w-5 h-5"></i></button>
-                            <input type="text" id="chat-input" placeholder="Ask anything..." class="flex-1 bg-transparent border-none outline-none text-stone-800 dark:text-white placeholder:text-stone-400">
-                            <button id="send-chat" class="p-3 bg-orange-400 hover:bg-orange-500 text-white rounded-[20px] transition-all"><i data-lucide="send" class="w-5 h-5"></i></button>
-                        </div>
-                    </div>
-                </div>
-            `;
-        };
-
-        const getProfileHtml = () => `
-            <div class="space-y-6 pt-2 animate-slide-up">
-                <h1 class="text-3xl font-bold text-stone-900 dark:text-white">Profile</h1>
-                <div class="bg-orange-50/50 dark:bg-stone-900 pt-8 pb-6 px-6 rounded-[32px] border border-orange-100 dark:border-stone-800 flex flex-col items-center relative overflow-hidden">
-                    <div class="absolute top-0 left-0 right-0 h-24 bg-orange-100/50 dark:bg-orange-900/10 z-0"></div>
-                    <div class="relative z-10 mb-3 group">
-                        <label class="cursor-pointer relative block">
-                            ${renderMascot('md', state.mascotImage, 'idle')}
-                            <div class="absolute bottom-0 right-0 bg-white shadow-md p-1.5 rounded-full hover:bg-orange-50 text-stone-500"><i data-lucide="camera" class="w-3 h-3"></i></div>
-                            <input type="file" accept="image/*" class="hidden" onchange="handleImageUpload(event, 'mascot')">
+                        <label class="cursor-pointer relative group">
+                            <div class="w-10 h-10 border border-stone-200 rounded-lg p-1 overflow-hidden bg-white dark:bg-stone-800">
+                                ${state.professorImage ? `<img src="${state.professorImage}" class="w-full h-full object-cover rounded-md">` : renderMascot('sm',null,'happy')}
+                            </div>
+                            <div class="absolute -bottom-1 -right-1 bg-white dark:bg-stone-800 rounded-full p-1 shadow border text-stone-500 hover:text-orange-500"><i data-lucide="camera" class="w-3 h-3"></i></div>
+                            <input type="file" accept="image/*" class="hidden" onchange="handleImage(event, 'professor')">
                         </label>
                     </div>
-                    <h2 class="text-xl font-bold text-stone-900 dark:text-white z-10">${state.userName}</h2>
-                    <p class="text-stone-500 text-sm z-10">Student</p>
-                </div>
-                <div class="bg-white dark:bg-stone-900 rounded-[32px] border border-stone-100 dark:border-stone-800 overflow-hidden">
-                    <div class="p-6 flex items-center justify-between border-b border-stone-50 dark:border-stone-800">
-                        <div class="flex items-center gap-3"><div class="w-10 h-10 rounded-xl bg-purple-100 text-purple-600 flex items-center justify-center"><i data-lucide="sun" class="w-5 h-5"></i></div><span class="font-semibold text-stone-700 dark:text-stone-200">Dark Mode</span></div>
-                        <button onclick="toggleDarkMode()" class="w-12 h-7 rounded-full transition-colors relative ${state.darkMode ? 'bg-orange-400' : 'bg-stone-200'}"><div class="w-5 h-5 bg-white rounded-full absolute top-1 transition-all shadow-sm ${state.darkMode ? 'left-6' : 'left-1'}"></div></button>
-                    </div>
-                    <div class="p-6 space-y-3 border-b border-stone-50 dark:border-stone-800">
-                        <label class="text-xs font-bold uppercase tracking-wider text-stone-400">API Key</label>
-                        <div class="flex gap-3">
-                            <div class="flex-1 bg-stone-50 dark:bg-stone-950 p-2 rounded-2xl flex items-center gap-2 border border-stone-100 dark:border-stone-800">
-                                <div class="p-2 text-stone-400"><i data-lucide="settings" class="w-4 h-4"></i></div>
-                                <input type="password" id="profile-key" value="${state.apiKey}" class="flex-1 bg-transparent border-none outline-none text-stone-500 text-sm" placeholder="Enter API Key">
+                    <div id="chat-box" class="flex-1 overflow-y-auto space-y-6 pb-32 scrollbar-hide">
+                        ${state.chatMessages.map(m => `
+                            <div class="flex w-full ${m.role==='user'?'justify-end':'justify-start gap-3'}">
+                                ${m.role==='assistant'?`<div class="w-8 h-8 rounded-full bg-stone-100 border border-stone-200 overflow-hidden shrink-0 mt-2">${state.professorImage?`<img src="${state.professorImage}" class="w-full h-full object-cover">`:`<span class="flex items-center justify-center h-full text-sm">👨‍🏫</span>`}</div>`:''}
+                                <div class="max-w-[80%] p-5 text-sm leading-relaxed shadow-sm ${m.role==='user'?'bg-orange-400 text-white rounded-3xl rounded-br-none':'bg-stone-100 dark:bg-stone-800 text-stone-800 dark:text-stone-200 rounded-3xl rounded-tl-none'}">${m.text}</div>
                             </div>
-                            <button onclick="saveKey()" class="p-3 rounded-2xl bg-orange-100 text-orange-500 hover:bg-orange-200"><i data-lucide="save" class="w-5 h-5"></i></button>
+                        `).join('')}
+                        ${state.chatThinking ? `<div class="flex justify-start gap-3"><div class="w-8 h-8 rounded-full bg-stone-100 border overflow-hidden shrink-0 mt-2">${state.professorImage?`<img src="${state.professorImage}" class="w-full h-full object-cover">`:`<span class="flex items-center justify-center h-full text-sm">👨‍🏫</span>`}</div><div class="bg-stone-100 dark:bg-stone-800 p-5 rounded-3xl rounded-tl-none flex gap-1"><div class="w-2 h-2 bg-stone-400 rounded-full animate-bounce"></div><div class="w-2 h-2 bg-stone-400 rounded-full animate-bounce delay-75"></div><div class="w-2 h-2 bg-stone-400 rounded-full animate-bounce delay-150"></div></div></div>` : ''}
+                    </div>
+                    <div class="fixed bottom-[85px] left-0 right-0 z-40 px-6 max-w-md mx-auto w-full">
+                        <div class="bg-white dark:bg-stone-900 p-2 rounded-[28px] shadow-xl border border-stone-200 dark:border-stone-700 flex items-center gap-2">
+                            <button class="p-3 text-stone-400"><i data-lucide="upload-cloud" class="w-5 h-5"></i></button>
+                            <input type="text" id="chat-inp" placeholder="Ask anything..." class="flex-1 bg-transparent border-none outline-none text-stone-800 dark:text-white placeholder:text-stone-400">
+                            <button id="chat-send" class="p-3 bg-orange-400 hover:bg-orange-500 text-white rounded-[20px] transition-all"><i data-lucide="send" class="w-5 h-5"></i></button>
                         </div>
                     </div>
-                    <button onclick="logout()" class="w-full p-6 flex items-center gap-3 hover:bg-red-50 dark:hover:bg-red-900/10 transition-colors text-red-500"><i data-lucide="log-out" class="w-5 h-5"></i><span class="font-semibold">Sign Out</span></button>
-                </div>
-            </div>`;
-
-        const getNavBarHtml = () => {
-            const tabs = [
-                { id: 'home', icon: 'home', label: 'Create' },
-                { id: 'library', icon: 'library', label: 'Library' },
-                { id: 'teacher', icon: 'graduation-cap', label: 'Teacher' },
-                { id: 'profile', icon: 'user', label: 'Profile' }
-            ];
-            const html = tabs.map(t => `
-                <button onclick="setTab('${t.id}')" class="flex flex-col items-center gap-1.5 transition-all w-16 ${state.activeTab === t.id ? 'text-orange-500 dark:text-orange-400 scale-105' : 'text-stone-400 dark:text-stone-600'}">
-                    <i data-lucide="${t.icon}" class="w-6 h-6" stroke-width="${state.activeTab === t.id ? '2.5' : '2'}"></i>
-                    <span class="text-[10px] font-medium tracking-wide">${t.label}</span>
-                </button>
-            `).join('');
-            return `<div class="fixed bottom-0 left-0 right-0 bg-white dark:bg-stone-900 border-t border-stone-100 dark:border-stone-800 px-6 py-4 flex justify-between items-center z-50 safe-area-bottom shadow-[0_-5px_20px_rgba(0,0,0,0.02)]">${html}</div>`;
+                </div>`;
         };
 
-        const getLoadingOverlay = () => `
-            <div class="fixed inset-0 bg-stone-900/40 backdrop-blur-md z-[100] flex flex-col items-center justify-center p-6">
-                <div class="bg-white dark:bg-stone-900 p-8 rounded-3xl shadow-2xl flex flex-col items-center max-w-sm w-full animate-fade-in">
-                    ${renderMascot('md', state.mascotImage, 'thinking')}
-                    <h3 class="mt-6 text-xl font-bold text-stone-800 dark:text-white">Brewing...</h3>
-                    <p class="mt-2 text-stone-500 text-center text-sm">Reading content and preparing.</p>
-                    <div class="loader text-orange-400 mt-6 border-orange-400 border-t-transparent"></div>
-                </div>
-            </div>`;
+        const renderProfile = () => {
+            return `
+                <div class="space-y-6 animate-slide-up">
+                    <h1 class="text-3xl font-bold text-stone-900 dark:text-white">Profile</h1>
+                    <div class="bg-orange-50/50 dark:bg-stone-900 pt-8 pb-6 px-6 rounded-[32px] border border-orange-100 dark:border-stone-800 flex flex-col items-center relative overflow-hidden">
+                        <div class="absolute top-0 left-0 right-0 h-24 bg-orange-100/50 dark:bg-orange-900/10 z-0"></div>
+                        <div class="relative z-10 mb-3 group">
+                            <label class="cursor-pointer relative block">
+                                ${renderMascot('md', state.mascotImage, 'idle')}
+                                <div class="absolute bottom-0 right-0 bg-white shadow-md p-1.5 rounded-full hover:bg-orange-50 text-stone-500"><i data-lucide="camera" class="w-3 h-3"></i></div>
+                                <input type="file" accept="image/*" class="hidden" onchange="handleImage(event, 'mascot')">
+                            </label>
+                        </div>
+                        <h2 class="text-xl font-bold text-stone-900 dark:text-white z-10">${state.userName}</h2>
+                        <p class="text-stone-500 text-sm z-10">Student</p>
+                    </div>
+                    <div class="bg-white dark:bg-stone-900 rounded-[32px] border border-stone-100 dark:border-stone-800 overflow-hidden">
+                        <div class="p-6 flex items-center justify-between border-b border-stone-50 dark:border-stone-800">
+                            <div class="flex items-center gap-3"><div class="w-10 h-10 rounded-xl bg-purple-100 text-purple-600 flex items-center justify-center"><i data-lucide="sun" class="w-5 h-5"></i></div><span class="font-semibold text-stone-700 dark:text-stone-200">Dark Mode</span></div>
+                            <button onclick="toggleTheme()" class="w-12 h-7 rounded-full transition-colors relative ${state.darkMode ? 'bg-orange-400' : 'bg-stone-200'}"><div class="w-5 h-5 bg-white rounded-full absolute top-1 transition-all shadow-sm ${state.darkMode ? 'left-6' : 'left-1'}"></div></button>
+                        </div>
+                        <div class="p-6 space-y-3 border-b border-stone-50 dark:border-stone-800">
+                            <label class="text-xs font-bold uppercase tracking-wider text-stone-400">API Key</label>
+                            <div class="flex gap-3">
+                                <div class="flex-1 bg-stone-50 dark:bg-stone-950 p-2 rounded-2xl flex items-center gap-2 border border-stone-100 dark:border-stone-800">
+                                    <div class="p-2 text-stone-400"><i data-lucide="settings" class="w-4 h-4"></i></div>
+                                    <input type="password" id="profile-key" value="${state.apiKey}" class="flex-1 bg-transparent border-none outline-none text-stone-500 text-sm" placeholder="Enter API Key">
+                                </div>
+                                <button onclick="saveKey()" class="p-3 rounded-2xl bg-orange-100 text-orange-500 hover:bg-orange-200"><i data-lucide="save" class="w-5 h-5"></i></button>
+                            </div>
+                        </div>
+                        <button onclick="logout()" class="w-full p-6 flex items-center gap-3 hover:bg-red-50 dark:hover:bg-red-900/10 transition-colors text-red-500"><i data-lucide="log-out" class="w-5 h-5"></i><span class="font-semibold">Sign Out</span></button>
+                    </div>
+                </div>`;
+        };
 
-        const getConfigModalHtml = () => `
+        const renderLoadingOverlay = () => `<div class="fixed inset-0 bg-stone-900/40 backdrop-blur-md z-[100] flex flex-col items-center justify-center p-6"><div class="bg-white dark:bg-stone-900 p-8 rounded-3xl shadow-2xl flex flex-col items-center max-w-sm w-full animate-fade-in">${renderMascot('md', state.mascotImage, 'thinking')}<h3 class="mt-6 text-xl font-bold text-stone-800 dark:text-white">Brewing...</h3><p class="mt-2 text-stone-500 text-center text-sm">Thinking hard...</p><div class="loader text-orange-400 mt-6 border-orange-400 border-t-transparent"></div></div></div>`;
+
+        const renderConfigModal = () => `
             <div class="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-4 bg-black/20 backdrop-blur-sm animate-fade-in">
                 <div class="bg-white dark:bg-stone-900 w-full max-w-sm rounded-[32px] p-6 shadow-2xl animate-slide-up relative border border-stone-100 dark:border-stone-800">
-                    <div class="flex justify-between items-start mb-2">
-                        <div class="w-full flex flex-col items-center pt-2">
-                            <div class="text-orange-400 mb-4"><i data-lucide="settings" class="w-10 h-10"></i></div>
-                            <h2 class="text-2xl font-bold text-stone-800 dark:text-white">Configure ${state.homeMode.toUpperCase()}</h2>
-                            <p class="text-stone-500 text-sm mt-1">Customize learning experience</p>
-                        </div>
-                        <button onclick="toggleConfig(false)" class="absolute top-6 right-6 p-2 bg-stone-100 rounded-full text-stone-400"><i data-lucide="x" class="w-5 h-5"></i></button>
+                    <div class="flex justify-between items-start mb-6">
+                        <div><h2 class="text-2xl font-bold text-stone-800 dark:text-white">Configure ${state.homeMode.toUpperCase()}</h2><p class="text-stone-500 text-sm">Customize it</p></div>
+                        <button onclick="toggleConfig(false)" class="p-2 bg-stone-100 rounded-full text-stone-400"><i data-lucide="x" class="w-5 h-5"></i></button>
                     </div>
-                    <div class="mt-8 space-y-4">
-                        <label class="text-sm font-bold text-stone-700 dark:text-stone-300 ml-1">Difficulty</label>
-                        <div class="flex justify-between gap-2 bg-stone-100 dark:bg-stone-800 p-1.5 rounded-2xl">
-                            ${['Easy', 'Medium', 'Hard'].map(l => `<button onclick="setConfig('difficulty', '${l}')" class="flex-1 py-3 rounded-xl text-sm font-bold transition-all ${state.quizConfig.difficulty === l ? 'bg-white dark:bg-stone-700 text-orange-500 shadow-sm' : 'text-stone-500'}">${l}</button>`).join('')}
-                        </div>
+                    <div class="space-y-6">
+                        <div><label class="text-sm font-bold text-stone-700 dark:text-stone-300 ml-1">Difficulty</label><div class="flex gap-2 mt-2 bg-stone-100 dark:bg-stone-800 p-1.5 rounded-2xl">${['Easy','Medium','Hard'].map(l=>`<button onclick="setConfig('difficulty','${l}')" class="flex-1 py-3 rounded-xl text-sm font-bold transition-all ${state.quizConfig.difficulty===l?'bg-white dark:bg-stone-700 text-orange-500 shadow-sm':'text-stone-500'}">${l}</button>`).join('')}</div></div>
+                        <div><label class="text-sm font-bold text-stone-700 dark:text-stone-300 ml-1">${state.homeMode==='lesson'?'Length':'Count'}</label><div class="flex gap-3 mt-2">${[5,10,20,'∞'].map(n=>`<button onclick="setConfig('count','${n}')" class="flex-1 py-3 rounded-xl border-2 font-bold text-lg ${state.quizConfig.count==n?'border-orange-400 text-orange-500 bg-orange-50 dark:bg-orange-900/20':'border-stone-200 dark:border-stone-700 text-stone-600'}">${n}</button>`).join('')}</div></div>
+                        ${state.homeMode==='quiz'?`<div class="bg-stone-50 dark:bg-stone-800/50 p-4 rounded-2xl flex items-center justify-between border border-stone-100 dark:border-stone-700"><div class="flex items-center gap-3"><div class="p-2 bg-blue-100 text-blue-500 rounded-xl"><i data-lucide="book-open" class="w-4 h-4"></i></div><span class="font-semibold text-stone-700 dark:text-stone-200 text-sm">Explanations</span></div><button onclick="setConfig('explanations',!state.quizConfig.explanations)" class="w-12 h-6 rounded-full relative transition-colors ${state.quizConfig.explanations?'bg-orange-400':'bg-stone-300'}"><div class="w-4 h-4 bg-white rounded-full absolute top-1 transition-all shadow-sm ${state.quizConfig.explanations?'left-7':'left-1'}"></div></button></div>`:''}
+                        <button onclick="generate()" class="w-full bg-orange-500 hover:bg-orange-600 text-white font-bold py-4 rounded-2xl shadow-lg flex items-center justify-center gap-2 transform active:scale-[0.98] transition-all"><i data-lucide="play" class="w-5 h-5"></i> Start</button>
                     </div>
-                    <div class="mt-8 space-y-4">
-                        <label class="text-sm font-bold text-stone-700 dark:text-stone-300 ml-1">${state.homeMode === 'lesson' ? 'Length' : 'Questions'}</label>
-                        <div class="flex justify-between gap-3">
-                            ${[5, 10, 20, '∞'].map(n => `<button onclick="setConfig('count', '${n}')" class="flex-1 py-3 rounded-xl border-2 font-bold text-lg transition-all ${state.quizConfig.count == n ? 'border-orange-400 text-orange-500 bg-orange-50 dark:bg-orange-900/20' : 'border-stone-200 dark:border-stone-700 text-stone-600'}">${n}</button>`).join('')}
-                        </div>
-                    </div>
-                    <button onclick="generateContent()" class="w-full mt-8 bg-orange-500 hover:bg-orange-600 text-white font-bold py-4 rounded-2xl shadow-lg flex items-center justify-center gap-2 transform active:scale-[0.98] transition-all"><i data-lucide="play" class="w-5 h-5"></i> Create</button>
                 </div>
             </div>`;
 
-        // 3. Quiz Player View
-        let qIndex = 0;
-        let qScore = 0;
-        let qSelected = null;
-        let qRevealed = false; // for lesson/flashcard
-        let qaEval = null; // {correct, feedback}
-        let qaEvaluating = false;
+        // 3. QUIZ PLAYER
+        let qIndex=0, qScore=0, qSelected=null, qaEval=null, qaLoading=false;
 
         const renderQuizPlayer = (root) => {
             const quiz = state.currentQuiz;
             if(!quiz) return;
             const q = quiz.questions[qIndex];
-            const progress = ((qIndex + 1) / quiz.questions.length) * 100;
-            const mode = quiz.mode;
+            const progress = ((qIndex+1)/quiz.questions.length)*100;
 
-            // Finished State
-            if (qIndex >= quiz.questions.length) {
-                root.innerHTML = `
-                    <div class="min-h-screen bg-[#FDFCF8] dark:bg-stone-900 flex flex-col items-center justify-center p-8 text-center space-y-8 animate-fade-in">
-                        ${renderMascot('lg', state.mascotImage, 'success')}
-                        <div class="space-y-2">
-                            <h1 class="text-4xl font-bold text-orange-500">Complete!</h1>
-                            <p class="text-stone-500 dark:text-stone-300 text-lg">Score: ${qScore} / ${quiz.questions.length}</p>
-                        </div>
-                        <button onclick="exitQuiz()" class="px-8 py-4 bg-orange-500 text-white rounded-2xl font-bold shadow-xl hover:scale-105 transition-transform">Back to Library</button>
-                    </div>
-                `;
+            if(qIndex >= quiz.questions.length) { // FINISHED
+                root.innerHTML = `<div class="min-h-screen bg-[#FDFCF8] dark:bg-stone-900 flex flex-col items-center justify-center p-8 text-center space-y-8 animate-fade-in">${renderMascot('lg',state.mascotImage,'success')}<div class="space-y-2"><h1 class="text-4xl font-bold text-orange-500">Complete!</h1><p class="text-stone-500 dark:text-stone-300 text-lg">Score: ${qScore} / ${quiz.questions.length}</p></div><button onclick="exitQuiz()" class="px-8 py-4 bg-orange-500 text-white rounded-2xl font-bold shadow-xl">Back to Library</button></div>`;
                 return;
             }
 
-            // Lesson (Read Only)
-            if (mode === 'lesson') {
-                const listHtml = quiz.questions.map((item, i) => `
-                    <div class="bg-white dark:bg-stone-900 p-6 rounded-[24px] shadow-sm border border-stone-100 dark:border-stone-800">
-                        <div class="flex items-start gap-4">
-                            <div class="w-8 h-8 rounded-full bg-stone-100 dark:bg-stone-800 flex items-center justify-center shrink-0 text-sm font-bold text-stone-500">${i+1}</div>
-                            <div class="space-y-3">
-                                <h3 class="font-bold text-lg text-stone-800 dark:text-stone-100">${item.question}</h3>
-                                <div class="h-px w-full bg-stone-50 dark:bg-stone-800"></div>
-                                <p class="text-stone-600 dark:text-stone-400 leading-relaxed text-sm">${item.answer}</p>
-                            </div>
-                        </div>
-                    </div>`).join('');
-
-                root.innerHTML = `
-                    <div class="min-h-screen bg-[#FDFCF8] dark:bg-stone-950 flex flex-col font-sans">
-                        <div class="px-6 py-6 flex justify-between items-center bg-white dark:bg-stone-900 shadow-sm sticky top-0 z-20">
-                            <button onclick="exitQuiz()" class="p-2 hover:bg-stone-100 dark:hover:bg-stone-800 rounded-full"><i data-lucide="arrow-left" class="w-6 h-6 text-stone-600"></i></button>
-                            <h2 class="font-bold text-lg text-stone-800 dark:text-white truncate max-w-[200px]">${quiz.title}</h2>
-                            <div class="w-8"></div>
-                        </div>
-                        <div class="flex-1 overflow-y-auto p-6 space-y-6 pb-32">
-                            <div class="flex justify-center mb-4">${renderMascot('md', state.mascotImage, 'happy')}</div>
-                            <div class="bg-blue-50 dark:bg-blue-900/10 p-6 rounded-[24px] border border-blue-100 dark:border-blue-800/50 mb-8">
-                                <h3 class="font-bold text-blue-800 dark:text-blue-300 mb-2">Overview</h3>
-                                <p class="text-stone-700 dark:text-stone-300 text-sm">${quiz.description}</p>
-                            </div>
-                            ${listHtml}
-                        </div>
-                    </div>`;
+            // LESSON MODE
+            if(quiz.mode === 'lesson') {
+                root.innerHTML = `<div class="min-h-screen bg-[#FDFCF8] dark:bg-stone-950 flex flex-col font-sans"><div class="px-6 py-6 flex justify-between items-center bg-white dark:bg-stone-900 shadow-sm sticky top-0 z-20"><button onclick="exitQuiz()" class="p-2 hover:bg-stone-100 rounded-full"><i data-lucide="arrow-left" class="text-stone-600"></i></button><h2 class="font-bold text-lg text-stone-800 dark:text-white truncate max-w-[200px]">${quiz.title}</h2><div class="w-8"></div></div><div class="flex-1 overflow-y-auto p-6 space-y-6 pb-32"><div class="flex justify-center mb-4">${renderMascot('md',state.mascotImage,'happy')}</div><div class="bg-blue-50 dark:bg-blue-900/10 p-6 rounded-[24px] border border-blue-100 dark:border-blue-800/50 mb-8"><h3 class="font-bold text-blue-800 dark:text-blue-300 mb-2">Overview</h3><p class="text-stone-700 dark:text-stone-300 text-sm">${quiz.description}</p></div>${quiz.questions.map((item,i)=>`<div class="bg-white dark:bg-stone-900 p-6 rounded-[24px] shadow-sm border border-stone-100 dark:border-stone-800"><div class="flex items-start gap-4"><div class="w-8 h-8 rounded-full bg-stone-100 dark:bg-stone-800 flex items-center justify-center shrink-0 text-sm font-bold text-stone-500">${i+1}</div><div class="space-y-3"><h3 class="font-bold text-lg text-stone-800 dark:text-stone-100">${item.question}</h3><div class="h-px w-full bg-stone-50 dark:bg-stone-800"></div><p class="text-stone-600 dark:text-stone-400 leading-relaxed text-sm">${item.answer}</p></div></div></div>`).join('')}</div></div>`;
                 return;
             }
 
-            // Interactive (Quiz/QA)
-            const mascotState = qaEval?.correct || (qSelected && qSelected === q.answer) ? 'success' : (qSelected || qaEval ? 'sad' : 'idle');
-            
-            // Options HTML (MCQ)
-            let interactionHtml = '';
-            if (mode === 'quiz' && q.options) {
-                interactionHtml = q.options.map(opt => {
-                    let btnClass = "w-full p-5 rounded-2xl text-left border-2 transition-all font-medium text-stone-700 dark:text-stone-200 text-lg mb-3 ";
+            // INTERACTIVE MODE
+            let interaction = '';
+            if(quiz.mode === 'quiz' && q.options) {
+                interaction = q.options.map(opt => {
+                    let cls = "w-full p-5 rounded-2xl text-left border-2 font-medium text-stone-700 dark:text-stone-200 text-lg mb-3 ";
                     let icon = '';
-                    if (qSelected) {
-                        if (opt === q.answer) {
-                            btnClass += "bg-green-100 border-green-400 text-green-800 dark:bg-green-900/30";
-                            icon = '<i data-lucide="check" class="text-green-600"></i>';
-                        } else if (opt === qSelected) {
-                            btnClass += "bg-red-50 border-red-300 text-red-800 dark:bg-red-900/20";
-                            icon = '<i data-lucide="x" class="text-red-500"></i>';
-                        } else {
-                            btnClass += "bg-white dark:bg-stone-800 border-transparent opacity-50";
-                        }
-                    } else {
-                        btnClass += "bg-white dark:bg-stone-800 border-transparent hover:border-orange-200 shadow-sm";
-                    }
-                    return `<button onclick="handleOption('${opt}')" ${qSelected ? 'disabled' : ''} class="${btnClass}"><div class="flex justify-between"><span>${opt}</span>${icon}</div></button>`;
+                    if(qSelected) {
+                        if(opt===q.answer) { cls+="bg-green-100 border-green-400 text-green-800 dark:bg-green-900/30"; icon='<i data-lucide="check" class="text-green-600"></i>'; }
+                        else if(opt===qSelected) { cls+="bg-red-50 border-red-300 text-red-800 dark:bg-red-900/20"; icon='<i data-lucide="x" class="text-red-500"></i>'; }
+                        else cls+="opacity-50";
+                    } else cls+="bg-white dark:bg-stone-800 border-transparent hover:border-orange-200 shadow-sm";
+                    return `<button onclick="handleOption('${opt}')" ${qSelected?'disabled':''} class="${cls}"><div class="flex justify-between"><span>${opt}</span>${icon}</div></button>`;
                 }).join('');
-            } else if (mode === 'qa') {
-                if (!qaEval) {
-                    interactionHtml = `
-                        <textarea id="qa-answer" class="w-full h-32 p-4 rounded-2xl bg-stone-50 dark:bg-stone-900 border border-stone-200 dark:border-stone-800 focus:border-orange-400 outline-none resize-none text-stone-800 dark:text-stone-200 mb-4" placeholder="Type answer..."></textarea>
-                        <button onclick="submitQA()" id="qa-btn" class="w-full py-4 bg-stone-800 dark:bg-stone-700 text-white rounded-2xl font-bold flex items-center justify-center gap-2">
-                            ${qaEvaluating ? '<div class="loader w-4 h-4 border-white"></div>' : 'Check Answer'}
-                        </button>`;
-                } else {
-                    interactionHtml = `
-                        <div class="p-6 rounded-[24px] border-2 animate-fade-in ${qaEval.correct ? 'bg-green-50 border-green-200 dark:bg-green-900/20' : 'bg-red-50 border-red-200 dark:bg-red-900/20'}">
-                            <div class="flex items-center gap-2 mb-2">
-                                <h4 class="font-bold ${qaEval.correct ? 'text-green-700' : 'text-red-700'}">${qaEval.correct ? 'Correct!' : 'Not quite right'}</h4>
-                            </div>
-                            <p class="text-stone-700 dark:text-stone-300 mb-4 text-sm">${qaEval.feedback}</p>
-                            ${!qaEval.correct ? `<div class="bg-white/50 p-4 rounded-xl"><span class="text-xs font-bold uppercase text-stone-400">Correct Answer</span><p class="text-stone-600 text-sm">${q.answer}</p></div>` : ''}
-                        </div>`;
-                }
+            } else if(quiz.mode === 'qa') {
+                if(!qaEval) interaction = `<textarea id="qa-txt" class="w-full h-32 p-4 rounded-2xl bg-stone-50 dark:bg-stone-900 border border-stone-200 outline-none dark:text-white mb-4" placeholder="Your answer..."></textarea><button onclick="submitQA()" class="w-full py-4 bg-stone-800 text-white rounded-2xl font-bold flex justify-center">${qaLoading?'<div class="loader w-4 h-4"></div>':'Check Answer'}</button>`;
+                else interaction = `<div class="p-6 rounded-[24px] border-2 animate-fade-in ${qaEval.correct?'bg-green-50 border-green-200 dark:bg-green-900/20':'bg-red-50 border-red-200 dark:bg-red-900/20'}"><div class="flex items-center gap-2 mb-2"><h4 class="font-bold ${qaEval.correct?'text-green-700':'text-red-700'}">${qaEval.correct?'Correct!':'Not quite right'}</h4></div><p class="text-sm text-stone-700 dark:text-stone-300">${qaEval.feedback}</p>${!qaEval.correct?`<div class="bg-white/50 p-4 rounded-xl mt-3"><span class="text-xs font-bold uppercase text-stone-400">Correct Answer</span><p class="text-stone-600 text-sm">${q.answer}</p></div>`:''}</div>`;
             }
 
             root.innerHTML = `
                 <div class="min-h-screen bg-[#FDFCF8] dark:bg-stone-950 flex flex-col font-sans">
                     <div class="px-6 py-6 flex justify-between items-center bg-white dark:bg-stone-900 shadow-sm z-10">
                         <button onclick="exitQuiz()" class="p-2 hover:bg-stone-100 rounded-full"><i data-lucide="arrow-left" class="text-stone-600"></i></button>
-                        <div class="w-full max-w-[100px] h-2 bg-stone-100 dark:bg-stone-800 rounded-full overflow-hidden ml-4 mr-4">
-                            <div class="h-full bg-orange-400 transition-all duration-300 ease-out" style="width: ${progress}%"></div>
-                        </div>
+                        <div class="w-full h-2 bg-stone-100 dark:bg-stone-800 rounded-full overflow-hidden mx-4"><div class="h-full bg-orange-400 transition-all duration-300" style="width:${progress}%"></div></div>
                         <div class="w-8"></div>
                     </div>
                     <div class="flex-1 overflow-y-auto pb-32">
                         <div class="max-w-xl mx-auto p-6 space-y-8">
                             <div class="text-center space-y-6 pt-4">
-                                <div class="flex justify-center mb-4">${renderMascot('md', state.mascotImage, qaEvaluating ? 'thinking' : mascotState)}</div>
+                                <div class="flex justify-center mb-4">${renderMascot('md',state.mascotImage,qaEval?.correct||(qSelected&&qSelected===q.answer)?'success':(qSelected||qaEval?'sad':'idle'))}</div>
                                 <div class="bg-white dark:bg-stone-900 p-6 rounded-[24px] shadow-sm border border-stone-100 dark:border-stone-800">
-                                    <span class="text-xs font-bold text-stone-400 uppercase tracking-wider mb-2 block">Question ${qIndex + 1}</span>
-                                    <h2 class="text-xl md:text-2xl font-bold text-stone-800 dark:text-white leading-relaxed">${q.question}</h2>
+                                    <span class="text-xs font-bold text-stone-400 uppercase tracking-wider mb-2 block">Question ${qIndex+1}</span>
+                                    <h2 class="text-xl font-bold text-stone-800 dark:text-white leading-relaxed">${q.question}</h2>
                                 </div>
                             </div>
-                            <div class="space-y-3">${interactionHtml}</div>
+                            <div class="space-y-3">${interaction}</div>
                             ${(qSelected && q.explanation) ? `<div class="bg-orange-50 dark:bg-orange-900/10 p-6 rounded-3xl animate-fade-in border border-orange-100"><h4 class="font-bold text-orange-700 dark:text-orange-300 mb-2">Explanation</h4><p class="text-stone-700 dark:text-stone-300 text-sm">${q.explanation}</p></div>` : ''}
                         </div>
                     </div>
-                    <div class="fixed bottom-0 left-0 right-0 p-6 bg-white dark:bg-stone-900 border-t border-stone-100 dark:border-stone-800 flex justify-center z-20 pb-8 safe-area-bottom">
-                        ${(qSelected || qaEval) ? `<button onclick="nextQuestion()" class="w-full max-w-sm flex items-center justify-center gap-2 px-8 py-4 bg-orange-500 hover:bg-orange-600 text-white rounded-2xl font-bold shadow-lg transition-transform hover:scale-[1.02]">${qIndex === quiz.questions.length - 1 ? "Finish" : "Next"} <i data-lucide="chevron-right"></i></button>` : '<div class="text-center text-stone-400 text-sm font-medium">Answer to continue</div>'}
+                    <div class="fixed bottom-0 left-0 right-0 p-6 bg-white dark:bg-stone-900 border-t border-stone-100 flex justify-center z-20 pb-8 safe-area-bottom">
+                        ${(qSelected||qaEval)?`<button onclick="nextQ()" class="w-full max-w-sm flex items-center justify-center gap-2 px-8 py-4 bg-orange-500 hover:bg-orange-600 text-white rounded-2xl font-bold shadow-lg transform active:scale-95 transition-all">${qIndex===quiz.questions.length-1?"Finish":"Next"} <i data-lucide="chevron-right"></i></button>`:`<div class="text-center text-stone-400 text-sm font-medium">Answer to continue</div>`}
                     </div>
                 </div>`;
         };
 
-        // --- Logic Handlers ---
+        // --- ACTIONS & HANDLERS ---
+        
+        window.handleLogin = (e) => {
+            e.preventDefault();
+            const name = $('#login-name').value;
+            const key = $('#login-key').value;
+            if(name && key) {
+                state.userName = name;
+                state.apiKey = key;
+                localStorage.setItem('maku_user_name',name);
+                localStorage.setItem('maku_api_key',key);
+                state.view = 'app';
+                render();
+            }
+        };
 
-        window.handleImageUpload = (e, type) => {
+        window.handleImage = (e, type) => {
             const file = e.target.files[0];
-            if (file) {
+            if(file) {
                 const reader = new FileReader();
                 reader.onloadend = () => {
-                    if (type === 'mascot') {
-                        state.mascotImage = reader.result;
-                        localStorage.setItem('maku_mascot_img', reader.result);
-                    } else if (type === 'professor') {
-                        state.professorImage = reader.result;
-                        localStorage.setItem('maku_professor_img', reader.result);
-                    }
+                    if(type==='mascot') { state.mascotImage = reader.result; localStorage.setItem('maku_mascot_img',reader.result); }
+                    else { state.professorImage = reader.result; localStorage.setItem('maku_professor_img',reader.result); }
                     render();
                 };
                 reader.readAsDataURL(file);
             }
         };
 
-        window.setTab = (tab) => {
-            state.activeTab = tab;
-            render();
-        };
+        window.setTab = (t) => { state.activeTab = t; render(); };
+        window.setMode = (m) => { state.homeMode = m; render(); };
+        window.toggleConfig = (s) => { state.showConfig = s; render(); };
+        window.setConfig = (k,v) => { state.quizConfig[k] = v; render(); };
+        window.toggleTheme = () => { state.darkMode = !state.darkMode; render(); };
+        window.saveKey = () => { state.apiKey = $('#profile-key').value; localStorage.setItem('maku_api_key',state.apiKey); alert("Saved!"); };
+        window.logout = () => { localStorage.clear(); location.reload(); };
 
-        window.setMode = (mode) => {
-            state.homeMode = mode;
-            render();
-        };
-
-        window.toggleConfig = (show) => {
-            state.showConfig = show;
-            render();
-        };
-
-        window.setConfig = (key, val) => {
-            state.quizConfig[key] = val;
-            render();
-        };
-
-        window.toggleDarkMode = () => {
-            state.darkMode = !state.darkMode;
-            applyTheme();
-            render();
-        };
-
-        window.saveKey = () => {
-            state.apiKey = $('#profile-key').value;
-            localStorage.setItem('maku_api_key', state.apiKey);
-            alert('API Key Saved');
-        };
-
-        window.logout = () => {
-            localStorage.clear();
-            location.reload();
-        };
-
-        // App Listeners
-        const attachAppListeners = () => {
-            // Home Inputs
-            if($('#topic-input')) {
-                $('#topic-input').addEventListener('input', (e) => {
-                    state.homeInputValue = e.target.value;
-                    state.homeSelectedFile = null;
-                    state.homeTextContent = '';
-                    render(); // Re-render to update btn state
-                });
-            }
-            if($('#text-input')) {
-                $('#text-input').addEventListener('input', (e) => {
-                    state.homeTextContent = e.target.value;
-                    state.homeInputValue = '';
-                    state.homeSelectedFile = null;
-                    render();
-                });
-            }
-            if($('#file-input')) {
-                $('#upload-area').addEventListener('click', () => $('#file-input').click());
-                $('#file-input').addEventListener('change', (e) => {
-                    const file = e.target.files[0];
-                    if(file) {
-                        const reader = new FileReader();
-                        reader.onloadend = () => {
-                            const result = reader.result;
-                            const mime = result.match(/data:([a-zA-Z0-9]+\/[a-zA-Z0-9-.+]+).*,.*/)[1];
-                            const base64 = result.split(',')[1];
-                            state.homeSelectedFile = { name: file.name, type: mime, base64: base64 };
-                            state.homeInputValue = '';
-                            state.homeTextContent = '';
-                            render();
-                        };
-                        reader.readAsDataURL(file);
-                    }
-                });
-            }
-            if($('#clear-file')) {
-                $('#clear-file').addEventListener('click', (e) => {
-                    e.stopPropagation();
-                    state.homeSelectedFile = null;
-                    render();
-                });
-            }
-            if($('#config-btn')) {
-                $('#config-btn').addEventListener('click', () => {
-                    state.showConfig = true;
-                    render();
-                });
-            }
-
-            // Teacher Chat
-            if($('#send-chat')) {
-                $('#send-chat').addEventListener('click', sendChatMessage);
-                $('#chat-input').addEventListener('keydown', (e) => {
-                    if(e.key === 'Enter') sendChatMessage();
-                });
-                // Scroll to bottom
-                const container = $('#chat-container');
-                if(container) container.scrollTop = container.scrollHeight;
-            }
-        };
-
-        window.generateContent = async () => {
+        window.generate = async () => {
+            if(!state.homeInputValue && !state.homeSelectedFile && !state.homeTextContent) return;
             state.showConfig = false;
             state.genLoading = true;
             render();
 
             try {
-                let systemPrompt = "";
-                if (state.homeMode === 'quiz') systemPrompt = "Create a multiple choice quiz.";
-                else if (state.homeMode === 'qa') systemPrompt = "Create an interactive study session with open-ended questions. Do NOT use multiple choice.";
-                else if (state.homeMode === 'lesson') systemPrompt = "Create a study guide/lesson with Question and detailed Answer pairs for reading.";
-
-                const qCount = state.quizConfig.count === '∞' ? 'exhaustive' : state.quizConfig.count;
-                systemPrompt += ` Generate ${qCount} items. Difficulty: ${state.quizConfig.difficulty}.`;
-                if(state.homeMode === 'quiz' && state.quizConfig.explanations) systemPrompt += " Include detailed explanations.";
-
-                let prompt = systemPrompt;
+                let prompt = "";
+                if(state.homeMode==='quiz') prompt = "Create a multiple choice quiz.";
+                else if(state.homeMode==='qa') prompt = "Create interactive Q&A (NO options).";
+                else prompt = "Create study guide with Q&A pairs for reading.";
+                
+                const count = state.quizConfig.count==='∞'?'exhaustive':state.quizConfig.count;
+                prompt += ` Generate ${count} items. Diff: ${state.quizConfig.difficulty}.`;
+                if(state.homeMode==='quiz' && state.quizConfig.explanations) prompt += " Include explanations.";
+                
                 if(state.homeSelectedFile) prompt += " Analyze attached file.";
-                else if(state.homeTextContent) prompt += ` Analyze: "${state.homeTextContent}"`;
+                else if(state.homeTextContent) prompt += ` Analyze text: "${state.homeTextContent}"`;
                 else prompt += ` Topic: "${state.homeInputValue}"`;
 
-                prompt += ` Return valid JSON: { "title": "Title", "description": "Desc", "questions": [ { "id": 1, "question": "Txt", "options": ["A","B"], "answer": "A/Txt", "explanation": "..." } ] }. If Q&A or Lesson, NO options array.`;
+                prompt += ` Return JSON: { "title": "Title", "description": "Desc", "questions": [ { "id": 1, "question": "Txt", "options": ["A","B"], "answer": "A/Txt", "explanation": "..." } ] }.`;
 
-                const result = await callGemini(prompt, state.homeSelectedFile ? {type: state.homeSelectedFile.type, base64: state.homeSelectedFile.base64} : null, 'json');
-
-                if (state.user) {
-                    await addDoc(collection(db, 'artifacts', appId, 'users', state.user.uid, 'quizzes'), {
-                        ...result,
-                        createdAt: serverTimestamp(),
-                        score: 0,
-                        totalQuestions: result.questions.length,
-                        type: state.homeSelectedFile ? 'file' : state.homeTextContent ? 'text' : 'topic',
-                        mode: state.homeMode,
-                        difficulty: state.quizConfig.difficulty
-                    });
-                }
+                const result = await callGemini(prompt, state.homeSelectedFile ? {type:state.homeSelectedFile.type, base64:state.homeSelectedFile.base64} : null, 'json');
                 
-                // Clear inputs
-                state.homeInputValue = '';
-                state.homeTextContent = '';
-                state.homeSelectedFile = null;
+                // Save using DataService (handles Local/Firebase transparently)
+                await DataService.addQuiz(state.user.uid, {
+                    ...result, createdAt: { seconds: Date.now()/1000 }, score: 0, totalQuestions: result.questions.length, mode: state.homeMode
+                });
+
+                state.homeInputValue = ''; state.homeTextContent = ''; state.homeSelectedFile = null;
                 state.activeTab = 'library';
-            } catch (e) {
-                alert("Error generating content. Please try again.");
+            } catch(e) {
+                alert("Generation failed. Check API Key.");
                 console.error(e);
-            } finally {
-                state.genLoading = false;
-                render();
             }
+            state.genLoading = false;
+            render();
         };
 
-        // Quiz Logic
         window.playQuiz = (id) => {
-            const quiz = state.quizzes.find(q => q.id === id);
-            if(quiz) {
-                state.currentQuiz = quiz;
-                state.view = 'quiz';
-                qIndex = 0;
-                qScore = 0;
-                qSelected = null;
-                qaEval = null;
-                render();
-            }
+            state.currentQuiz = state.quizzes.find(q=>q.id===id);
+            state.view = 'quiz'; qIndex=0; qScore=0; qSelected=null; qaEval=null;
+            render();
         };
 
         window.handleOption = (opt) => {
@@ -864,94 +669,79 @@
         };
 
         window.submitQA = async () => {
-            const userAns = $('#qa-answer').value;
-            if(!userAns.trim()) return;
-            qaEvaluating = true;
-            render();
-
-            const q = state.currentQuiz.questions[qIndex];
-            const prompt = `Grade student answer. Question: "${q.question}". Correct Answer: "${q.answer}". Student Answer: "${userAns}". Return JSON: { "correct": boolean, "feedback": "Short feedback." }`;
-            
+            const val = $('#qa-txt').value;
+            if(!val.trim()) return;
+            qaLoading = true; render();
             try {
-                qaEval = await callGemini(prompt, null, 'json');
-                if(qaEval.correct) qScore++;
-            } catch(e) {
-                qaEval = { correct: false, feedback: "Error connecting to grading AI." };
-            }
-            qaEvaluating = false;
-            render();
+                const q = state.currentQuiz.questions[qIndex];
+                const res = await callGemini(`Grade answer. Q: "${q.question}". Correct: "${q.answer}". Student: "${val}". JSON: {"correct":bool, "feedback":"str"}`, null, 'json');
+                qaEval = res;
+                if(res.correct) qScore++;
+            } catch(e) { qaEval = {correct:false, feedback:"Error connecting."}; }
+            qaLoading = false; render();
         };
 
-        window.nextQuestion = () => {
-            if (qIndex < state.currentQuiz.questions.length - 1) {
-                qIndex++;
-                qSelected = null;
-                qaEval = null;
-                render();
-            } else {
-                updateDoc(doc(db, 'artifacts', appId, 'users', state.user.uid, 'quizzes', state.currentQuiz.id), {
-                    score: qScore,
-                    lastPlayed: serverTimestamp()
-                });
-                qIndex++; // To trigger finish screen
-                render();
+        window.nextQ = () => {
+            if(qIndex < state.currentQuiz.questions.length-1) { qIndex++; qSelected=null; qaEval=null; render(); }
+            else {
+                DataService.updateQuiz(state.user.uid, state.currentQuiz.id, { score: qScore });
+                qIndex++; render();
             }
         };
 
-        window.exitQuiz = () => {
-            state.view = 'app';
-            state.activeTab = 'library';
-            state.currentQuiz = null;
-            render();
-        };
+        window.exitQuiz = () => { state.view = 'app'; state.currentQuiz = null; render(); };
+        window.deleteQuiz = async (e, id) => { e.stopPropagation(); if(confirm("Delete?")) await DataService.deleteQuiz(state.user.uid, id); };
 
-        window.deleteQuiz = async (e, id) => {
-            e.stopPropagation();
-            if(confirm("Delete this?")) {
-                await deleteDoc(doc(db, 'artifacts', appId, 'users', state.user.uid, 'quizzes', id));
-            }
-        };
-
-        // Teacher Logic
-        const sendChatMessage = async () => {
-            const input = $('#chat-input');
-            const txt = input.value.trim();
-            if(!txt) return;
+        const attachListeners = () => {
+            if($('#topic-inp')) $('#topic-inp').addEventListener('input', e => { state.homeInputValue=e.target.value; render(); });
+            if($('#text-inp')) $('#text-inp').addEventListener('input', e => { state.homeTextContent=e.target.value; render(); });
+            if($('#upload-zone')) $('#upload-zone').addEventListener('click', () => $('#file-inp').click());
+            if($('#file-inp')) $('#file-inp').addEventListener('change', e => {
+                const f = e.target.files[0];
+                if(f) {
+                    const r = new FileReader();
+                    r.onload = () => { state.homeSelectedFile = {name:f.name, type:f.type, base64:r.result.split(',')[1]}; render(); };
+                    r.readAsDataURL(f);
+                }
+            });
+            if($('#clear-file')) $('#clear-file').addEventListener('click', e => { e.stopPropagation(); state.homeSelectedFile=null; render(); });
+            if($('#config-btn')) $('#config-btn').addEventListener('click', () => toggleConfig(true));
             
-            state.chatMessages.push({ role: 'user', text: txt });
-            state.chatThinking = true;
-            input.value = '';
-            render();
-
-            const history = state.chatMessages.slice(-5).map(m => `${m.role === 'user' ? 'Student' : 'Vayur'}: ${m.text}`).join('\n');
-            const prompt = `You are Professor Vayur. Student: ${state.userName}. History:\n${history}\nStudent: ${txt}\nVayur:`;
-
-            try {
-                const response = await callGemini(prompt, null, 'text');
-                state.chatMessages.push({ role: 'assistant', text: response });
-            } catch(e) {
-                state.chatMessages.push({ role: 'assistant', text: "Connection error." });
+            // Chat
+            if($('#chat-send')) {
+                const send = async () => {
+                    const txt = $('#chat-inp').value.trim();
+                    if(!txt) return;
+                    state.chatMessages.push({role:'user',text:txt});
+                    state.chatThinking = true; $('#chat-inp').value=''; render();
+                    const hist = state.chatMessages.slice(-5).map(m=>`${m.role==='user'?'Student':'Vayur'}: ${m.text}`).join('\n');
+                    try {
+                        const res = await callGemini(`You are Prof Vayur. Student:${state.userName}. Chat:\n${hist}\nVayur:`, null, 'text');
+                        state.chatMessages.push({role:'assistant',text:res});
+                    } catch(e) { state.chatMessages.push({role:'assistant',text:"Connection error."}); }
+                    state.chatThinking = false; render();
+                    $('#chat-box').scrollTop = $('#chat-box').scrollHeight;
+                };
+                $('#chat-send').addEventListener('click', send);
+                $('#chat-inp').addEventListener('keydown', e => { if(e.key==='Enter') send(); });
+                $('#chat-box').scrollTop = $('#chat-box').scrollHeight;
             }
-            state.chatThinking = false;
-            render();
         };
 
-        // --- Init ---
-        onAuthStateChanged(auth, (u) => {
+        // --- BOOTSTRAP ---
+        DataService.init();
+        DataService.onAuthStateChanged(u => {
             state.user = u;
-            state.loading = false;
-            
-            // Listen for Quizzes
             if(u) {
-                const q = query(collection(db, 'artifacts', appId, 'users', u.uid, 'quizzes'), orderBy('createdAt', 'desc'));
-                onSnapshot(q, (snap) => {
-                    state.quizzes = snap.docs.map(d => ({id: d.id, ...d.data()}));
+                // Subscribe to quizzes (works for both Firebase and Local)
+                DataService.subscribeQuizzes(u.uid, (data) => {
+                    state.quizzes = data;
                     if(state.view !== 'quiz') render();
                 });
             } else {
-                signInAnonymously(auth);
+                DataService.signIn();
             }
-            
+            state.loading = false;
             render();
         });
 
