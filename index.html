@@ -353,6 +353,8 @@
 
         const renderHome = () => {
             const name = state.userName.length > 10 ? state.userName.substring(0,10)+'...' : state.userName;
+            const canConfig = state.homeInputValue || state.homeSelectedFile || state.homeTextContent;
+            
             return `
                 <div class="space-y-8 animate-slide-up">
                     <div>
@@ -387,7 +389,7 @@
                         <div class="flex items-center gap-4 text-stone-200"><div class="h-px bg-current flex-1"></div><span class="text-xs text-stone-400">OR</span><div class="h-px bg-current flex-1"></div></div>
                         <textarea id="text-inp" placeholder="Paste notes here..." class="w-full px-4 py-4 rounded-2xl bg-stone-50 dark:bg-stone-950 outline-none border border-transparent focus:bg-white focus:border-orange-200 dark:text-white min-h-[100px] resize-none text-sm">${state.homeTextContent}</textarea>
 
-                        <button id="config-btn" class="w-full py-4 rounded-2xl font-bold text-lg transition-all ${(!state.homeInputValue&&!state.homeSelectedFile&&!state.homeTextContent)?'bg-stone-200 dark:bg-stone-800 text-stone-400':'bg-orange-400 hover:bg-orange-500 text-white shadow-lg'}">Configure ${state.homeMode.toUpperCase()}</button>
+                        <button id="config-btn" class="w-full py-4 rounded-2xl font-bold text-lg transition-all ${!canConfig ? 'bg-stone-200 dark:bg-stone-800 text-stone-400 cursor-not-allowed' : 'bg-orange-400 hover:bg-orange-500 text-white shadow-lg transform active:scale-[0.98]'}" ${!canConfig ? 'disabled' : ''}>Configure ${state.homeMode.toUpperCase()}</button>
                     </div>
                 </div>
             `;
@@ -693,8 +695,32 @@
         window.deleteQuiz = async (e, id) => { e.stopPropagation(); if(confirm("Delete?")) await DataService.deleteQuiz(state.user.uid, id); };
 
         const attachListeners = () => {
-            if($('#topic-inp')) $('#topic-inp').addEventListener('input', e => { state.homeInputValue=e.target.value; render(); });
-            if($('#text-inp')) $('#text-inp').addEventListener('input', e => { state.homeTextContent=e.target.value; render(); });
+            // Updated Listener Logic: Don't Re-Render on Input
+            const updateBtn = () => {
+                const btn = $('#config-btn');
+                if(!btn) return;
+                const active = state.homeInputValue || state.homeSelectedFile || state.homeTextContent;
+                if(active) {
+                    btn.className = "w-full py-4 rounded-2xl font-bold text-lg transition-all bg-orange-400 hover:bg-orange-500 text-white shadow-lg transform active:scale-[0.98]";
+                    btn.removeAttribute('disabled');
+                } else {
+                    btn.className = "w-full py-4 rounded-2xl font-bold text-lg transition-all bg-stone-200 dark:bg-stone-800 text-stone-400 cursor-not-allowed";
+                    btn.setAttribute('disabled', 'true');
+                }
+            };
+
+            if($('#topic-inp')) $('#topic-inp').addEventListener('input', e => { 
+                state.homeInputValue = e.target.value; 
+                // Do NOT call render() here
+                updateBtn();
+            });
+            
+            if($('#text-inp')) $('#text-inp').addEventListener('input', e => { 
+                state.homeTextContent = e.target.value; 
+                // Do NOT call render() here
+                updateBtn();
+            });
+
             if($('#upload-zone')) $('#upload-zone').addEventListener('click', () => $('#file-inp').click());
             if($('#file-inp')) $('#file-inp').addEventListener('change', e => {
                 const f = e.target.files[0];
